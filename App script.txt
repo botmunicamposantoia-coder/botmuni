@@ -1,0 +1,195 @@
+const GEMINI_API_KEY = 'AQ.Ab8RN6JA-7laWxXo2-4PILJuEBpwefZVR8cGq3cT4Bbiu31SEQ'; 
+const DRIVE_FOLDER_ID = '1C2fAL7M_SBroafY3kJglcgSNCL2U5DdZ'; 
+
+function doPost(e) {
+  try {
+    let data = JSON.parse(e.postData.contents);
+    let preguntaUsuario = data.pregunta || data.message || "Hola";
+    
+    // Capturamos la info del archivo si lo mandan
+    let nombreArchivo = data.fileName || null;
+    let base64Archivo = data.fileBase64 || null;
+    let mimeType = data.mimeType || null;
+
+    let respuesta = procesarConsulta(preguntaUsuario, nombreArchivo, base64Archivo, mimeType);
+
+    return ContentService.createTextOutput(JSON.stringify({
+      "status": "success",
+      "respuesta": respuesta
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      "status": "error",
+      "respuesta": "Hubo un error interno al procesar tu consulta."
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  let preguntaUsuario = (e && e.parameter && e.parameter.pregunta) ? e.parameter.pregunta : "¿Quién es Germán Ralle?";
+  let respuesta = procesarConsulta(preguntaUsuario, null, null, null);
+  return ContentService.createTextOutput("🤖 Respuesta del Bot:\n\n" + respuesta);
+}
+
+function procesarConsulta(pregunta, nombreArchivo, base64Archivo, mimeType) {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaConocimiento = libro.getSheetByName('CONOCIMIENTO');
+  const hojaConsultas = libro.getSheetByName('CONSULTAS');
+
+  if (!hojaConocimiento) {
+    return "En este momento no es posible acceder a la base de conocimiento. Por favor, intenta más tarde.";
+  }
+
+  const pregClean = pregunta.toLowerCase().trim();
+
+  // -------------------------------------------------------------------
+  // MANEJO LOCAL DE SALUDOS BÁSICOS (Respuesta instantánea 0ms)
+  // -------------------------------------------------------------------
+  const saludos = ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "que tal", "hola!", "holaa"];
+  
+  // Si mandó solo un saludo y NO hay archivos adjuntos, respondemos rápido
+  if (saludos.includes(pregClean) && !base64Archivo) {
+    let saludoRespuesta = "¡Hola! 👋 Soy el asistente virtual de atención ciudadana del Diputado Germán Ralle. ¿En qué te puedo ayudar hoy?";
+    if (hojaConsultas) {
+      let uniqueId = Utilities.getUuid().substring(0, 8);
+      hojaConsultas.appendRow([uniqueId, "Ciudadano", new Date(), pregunta, "Sistema (Saludo rápido)", saludoRespuesta, ""]);
+    }
+    return saludoRespuesta;
+  }
+
+  let linkArchivoDrive = "";
+
+  // -------------------------------------------------------------------
+  // GUARDAR ARCHIVO EN DRIVE
+  // -------------------------------------------------------------------
+  if (base64Archivo && nombreArchivo && DRIVE_FOLDER_ID && DRIVE_FOLDER_ID !== 'PEGAR_AQUI_EL_ID_DE_TU_CARPETA') {
+    try {
+      let carpeta = DriveApp.getFolderById(DRIVE_FOLDER_ID);
+      let decodificado = Utilities.base64Decode(base64Archivo);
+      let blob = Utilities.newBlob(decodificado, mimeType, nombreArchivo);
+      
+      let archivoGuardado = carpeta.createFile(blob);
+      archivoGuardado.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      linkArchivoDrive = archivoGuardado.getUrl();
+      
+      // Le avisamos a Gemini que el usuario mandó algo para que lo tenga en cuenta en su respuesta
+      pregunta = pregunta + " [El ciudadano adjuntó un archivo: " + nombreArchivo + " - Ya fue guardado en el sistema]";
+    } catch (e) {
+      linkArchivoDrive = "Error al guardar: " + e.message;
+    }
+  }
+
+  const datos = hojaConocimiento.getDataRange().getValues();
+
+  // -------------------------------------------------------------------
+  // CAPA 1: ARMADO DEL CONTEXTO Y BÚSQUEDA LOCAL
+  // -------------------------------------------------------------------
+  let contextoBase = `Eres el asistente virtual interactivo y oficial del diputado provincial Germán Ralle (Provincia de Salta). 
+Tu objetivo es atender a los ciudadanos con empatía, profesionalismo, cercanía y tono servicial.
+
+INSTRUCCIONES DE INTERACCIÓN:
+1. Si el ciudadano saluda o hace conversación amigable, responde con calidez y ponte a disposición.
+2. Para consultas sobre trámites, subsidios, proyectos, becas u obras, prioriza ÚNICAMENTE la siguiente INFORMACIÓN OFICIAL CARGADA.
+3. Si la pregunta NO se encuentra en la información oficial, NO uses un mensaje de error rígido. Responde amablemente explicando que no cuentas con ese dato específico en tu base actual, pero que tomarás nota de su inquietud para derivarla al equipo de trabajo del diputado.
+4. Si el ciudadano adjuntó un archivo (te llegará un aviso entre corchetes []), confírmale amablemente que lo recibiste y que fue guardado en el sistema/expediente.
+
+INFORMACIÓN OFICIAL CARGADA EN EL SISTEMA:\n`;
+
+  let coincidenciaLocal = null;
+
+  for (let i = 1; i < datos.length; i++) {
+    let pregSheet = String(datos[i][2] || "").trim();
+    let palabrasClave = String(datos[i][3] || "").trim();
+    let respSheet = String(datos[i][4] || "").trim();
+
+    if (pregSheet && respSheet) {
+      contextoBase += `• Tema: ${pregSheet} | Palabras clave: ${palabrasClave} -> Respuesta oficial: ${respSheet}\n`;
+
+      let listClaves = palabrasClave.toLowerCase().split(",").map(k => k.trim());
+      let coincide = listClaves.some(clave => clave.length > 2 && pregClean.includes(clave));
+
+      if (coincide && respSheet !== "[COMPLETAR CON INFORMACIÓN OFICIAL]" && !coincidenciaLocal) {
+        coincidenciaLocal = respSheet;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // CAPA 2: LLAMADA A GEMINI
+  // -------------------------------------------------------------------
+  const modelos = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+  let respuestaIA = null;
+
+  for (let modelo of modelos) {
+    let url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${GEMINI_API_KEY}`;
+    
+    let payload = {
+      "contents": [{
+        "parts": [{
+          "text": contextoBase + "\n\n--- FIN DE LA INFORMACIÓN ---\n\nConsulta o mensaje del ciudadano: \"" + pregunta + "\"\n\nRespuesta del asistente (redacta de forma natural, fluida y conversacional directamente al ciudadano):"
+        }]
+      }],
+      "generationConfig": {
+        "temperature": 0.4, // Ajustado a 0.4 para mayor fluidez al conversar
+        "maxOutputTokens": 300
+      }
+    };
+
+    let options = {
+      "method": "post",
+      "contentType": "application/json",
+      "payload": JSON.stringify(payload),
+      "muteHttpExceptions": true
+    };
+
+    for (let intento = 0; intento < 2; intento++) {
+      try {
+        let response = UrlFetchApp.fetch(url, options);
+        let statusCode = response.getResponseCode();
+        let rawText = response.getContentText();
+
+        if (statusCode === 200) {
+          let json = JSON.parse(rawText);
+          if (json.candidates && json.candidates.length > 0) {
+            respuestaIA = json.candidates[0].content.parts[0].text;
+            break;
+          }
+        } else if (statusCode === 503 || statusCode === 429) {
+          Utilities.sleep(1000);
+        }
+      } catch (e) {
+        Utilities.sleep(500);
+      }
+    }
+    if (respuestaIA) break;
+  }
+
+  // -------------------------------------------------------------------
+  // CAPA 3: RESOLUCIÓN Y GUARDADO EN EXCEL
+  // -------------------------------------------------------------------
+  let respuestaFinal = "";
+
+  if (respuestaIA) {
+    respuestaFinal = respuestaIA;
+  } else if (coincidenciaLocal) {
+    respuestaFinal = coincidenciaLocal;
+  } else {
+    // Fallback por si la IA de Google está caída y la pregunta no es local
+    respuestaFinal = "¡Hola! Gracias por escribirnos. En este momento el sistema está experimentando demoras, pero podés dejarme tus datos o consulta detallada para que la derivemos al equipo del Diputado Germán Ralle.";
+  }
+
+  // Guardamos en la pestaña CONSULTAS
+  if (hojaConsultas) {
+    try {
+      let uniqueId = Utilities.getUuid().substring(0, 8);
+      hojaConsultas.appendRow([uniqueId, "Ciudadano", new Date(), pregunta, "IA/Sistema", respuestaFinal, linkArchivoDrive]);
+    } catch (e) {}
+  }
+
+  return respuestaFinal;
+}
+
+function autorizarDrive() {
+  DriveApp.getFolderById(DRIVE_FOLDER_ID);
+}

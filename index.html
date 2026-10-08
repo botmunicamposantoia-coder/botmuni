@@ -71,9 +71,15 @@
             padding: 14px 16px;
             display: flex;
             align-items: center;
-            gap: 12px;
+            justify-content: space-between;
             flex-shrink: 0;
             z-index: 10;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
 
         .avatar {
@@ -118,6 +124,24 @@
             display: inline-block;
         }
 
+        .clear-btn {
+            background: rgba(255, 255, 255, 0.15);
+            border: none;
+            color: white;
+            padding: 8px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .clear-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         /* Body Chat */
         .chat-body {
             flex: 1;
@@ -138,6 +162,7 @@
             line-height: 1.45;
             word-wrap: break-word;
             animation: fadeIn 0.2s ease-in-out;
+            white-space: pre-wrap;
         }
 
         @keyframes fadeIn {
@@ -293,27 +318,22 @@
 <div class="chat-container">
     <!-- Header -->
     <div class="chat-header">
-        <div class="avatar">
-            <img src="images.jpg" alt="Diputado Germán Ralle">
+        <div class="header-left">
+            <div class="avatar">
+                <img src="images.jpg" alt="Diputado Germán Ralle">
+            </div>
+            <div class="header-info">
+                <h2>Asistente Ciudadano</h2>
+                <p><span class="status-dot"></span> Diputado Germán Ralle</p>
+            </div>
         </div>
-        <div class="header-info">
-            <h2>Asistente Ciudadano</h2>
-            <p><span class="status-dot"></span> Diputado Germán Ralle</p>
-        </div>
+        <button class="clear-btn" onclick="clearChatHistory()" title="Limpiar conversación">
+            <i class="fa-solid fa-rotate-right"></i>
+        </button>
     </div>
 
     <!-- Chat Messages -->
     <div class="chat-body" id="chatBody">
-        <div class="message bot-message">
-            ¡Hola! 👋 Soy el asistente virtual de atención ciudadana del Diputado Germán Ralle. ¿En qué puedo ayudarte hoy?
-        </div>
-
-        <div class="suggestions" id="suggestions">
-            <div class="chip" onclick="sendQuickMessage('¿Quién es Germán Ralle?')">¿Quién es Germán Ralle?</div>
-            <div class="chip" onclick="sendQuickMessage('¿Qué proyectos presentó?')">¿Qué proyectos presentó?</div>
-            <div class="chip" onclick="sendQuickMessage('¿Cómo hacer una consulta?')">¿Cómo hacer una consulta?</div>
-        </div>
-
         <div class="typing" id="typingIndicator">
             <span></span><span></span><span></span>
         </div>
@@ -322,7 +342,6 @@
     <!-- Input Form -->
     <div class="chat-footer">
         <form class="input-form" id="chatForm" onsubmit="handleSend(event)">
-            <!-- Botón del clip y el input de archivo oculto -->
             <label for="fileInput" class="attach-btn" id="attachLabel">
                 <i class="fa-solid fa-paperclip"></i>
             </label>
@@ -340,20 +359,96 @@
 </div>
 
 <script>
-    // 🔴 LA URL DE TU SCRIPT DE GOOGLE APPS
-    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzuq4kfpYSCge53mdTSueMu3mp7NgwjijZneCNAonOO0rej-mc6gDn7pPVf7QbgSyWR/exec';
+    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw_4qeW9TIduExpcBc5Rg4SevdXdBvWOJ2Y-KRqUl0TcTLSgQNB9_vxnG4xYuoslA55/exec';
+    const LOCAL_STORAGE_KEY = 'chat_history_ralle';
 
     const chatBody = document.getElementById('chatBody');
     const userInput = document.getElementById('userInput');
     const typingIndicator = document.getElementById('typingIndicator');
-    const suggestions = document.getElementById('suggestions');
 
-    // Variables para guardar el archivo
+    let chatHistory = [];
     let fileBase64 = null;
     let fileName = null;
     let fileMimeType = null;
 
+    // Inicializar chat al cargar
+    document.addEventListener('DOMContentLoaded', () => {
+        loadChatHistory();
+    });
+
+    function loadChatHistory() {
+        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (saved) {
+            try {
+                chatHistory = JSON.parse(saved);
+            } catch (e) {
+                chatHistory = [];
+            }
+        }
+
+        if (chatHistory.length === 0) {
+            // Mensaje inicial por defecto
+            chatHistory.push({
+                sender: 'bot',
+                text: '¡Hola! 👋 Soy el asistente virtual de atención ciudadana del Diputado Germán Ralle. ¿En qué te puedo ayudar hoy?'
+            });
+            saveChatHistory();
+        }
+
+        renderChat();
+    }
+
+    function saveChatHistory() {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(chatHistory));
+    }
+
+    function clearChatHistory() {
+        if (confirm('¿Deseas reiniciar la conversación?')) {
+            localStorage.removeItem(LOCAL_STORAGE_KEY);
+            chatHistory = [{
+                sender: 'bot',
+                text: '¡Hola! 👋 Soy el asistente virtual de atención ciudadana del Diputado Germán Ralle. ¿En qué te puedo ayudar hoy?'
+            }];
+            saveChatHistory();
+            renderChat();
+        }
+    }
+
+    function renderChat() {
+        // Remover todos los mensajes antiguos excepto la animación typing
+        const messages = chatBody.querySelectorAll('.message, .suggestions');
+        messages.forEach(m => m.remove());
+
+        chatHistory.forEach((msg, index) => {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('message', msg.sender === 'user' ? 'user-message' : 'bot-message');
+            msgDiv.innerText = msg.text;
+            chatBody.insertBefore(msgDiv, typingIndicator);
+
+            // Agregar sugerencias si es el mensaje inicial
+            if (index === 0 && chatHistory.length === 1 && msg.sender === 'bot') {
+                const suggDiv = document.createElement('div');
+                suggDiv.classList.add('suggestions');
+                suggDiv.id = 'suggestions';
+                suggDiv.innerHTML = `
+                    <div class="chip" onclick="sendQuickMessage('¿Quién es Germán Ralle?')">¿Quién es Germán Ralle?</div>
+                    <div class="chip" onclick="sendQuickMessage('¿Qué proyectos presentó?')">¿Qué proyectos presentó?</div>
+                    <div class="chip" onclick="sendQuickMessage('¿Cómo hacer una consulta?')">¿Cómo hacer una consulta?</div>
+                `;
+                chatBody.insertBefore(suggDiv, typingIndicator);
+            }
+        });
+
+        chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
     function appendMessage(text, sender) {
+        chatHistory.push({ sender: sender, text: text });
+        saveChatHistory();
+        
+        const sugg = document.getElementById('suggestions');
+        if (sugg) sugg.remove();
+
         const msgDiv = document.createElement('div');
         msgDiv.classList.add('message', sender === 'user' ? 'user-message' : 'bot-message');
         msgDiv.innerText = text;
@@ -364,11 +459,9 @@
 
     function sendQuickMessage(text) {
         userInput.value = text;
-        if(suggestions) suggestions.style.display = 'none';
         handleSend(new Event('submit'));
     }
 
-    // Función para leer el archivo cuando el usuario lo elige
     function updateFileLabel() {
         const fileInput = document.getElementById('fileInput');
         const attachLabel = document.getElementById('attachLabel');
@@ -383,7 +476,6 @@
             
             const reader = new FileReader();
             reader.onload = function(e) {
-                // Separamos el encabezado para quedarnos solo con el código base64
                 fileBase64 = e.target.result.split(',')[1];
             };
             reader.readAsDataURL(file);
@@ -392,7 +484,6 @@
         }
     }
 
-    // Función para limpiar después de enviar
     function resetFileInput() {
         fileBase64 = null;
         fileName = null;
@@ -406,25 +497,27 @@
         e.preventDefault();
         const text = userInput.value.trim();
         
-        // No hacemos nada si no hay texto y tampoco hay archivo
         if (!text && !fileBase64) return; 
 
-        if(suggestions) suggestions.style.display = 'none';
-
-        // Mostramos el mensaje en el chat del usuario
         let mensajeVisual = text;
         if (fileName) mensajeVisual += (text ? "\n" : "") + "📎 [" + fileName + "]";
-        appendMessage(mensajeVisual || "📎 Archivo enviado", 'user');
         
-        // Preparamos el paquete de datos
+        appendMessage(mensajeVisual || "📎 Archivo enviado", 'user');
+
+        // Extraer los últimos 5 mensajes del historial para contexto
+        const recentHistory = chatHistory.slice(-6, -1).map(h => ({
+            rol: h.sender === 'user' ? 'Ciudadano' : 'Asistente',
+            texto: h.text
+        }));
+
         const payload = {
             pregunta: text || "Te adjunto un archivo.", 
+            historial: recentHistory,
             fileName: fileName,
             fileBase64: fileBase64,
             mimeType: fileMimeType
         };
 
-        // Limpiamos los campos
         userInput.value = '';
         resetFileInput();
 
